@@ -62,3 +62,7 @@ http://127.0.0.1:8000
 That's it. 🔥
 
 **NEXUS V3 — Local AI. Your machine. Your data.**
+
+## Documentation Notes
+
+NEXUS is designed around a local-first workflow: the application communicates with locally installed Ollama models while chat history and settings remain part of the local application environment.
