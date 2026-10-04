@@ -1,5 +1,6 @@
 # NEXUS-AGENTv3
 NEXUS is a private, local-first AI workstation designed to bring powerful AI directly to your computer without relying on cloud APIs or external AI services. Built around Ollama, NEXUS allows users to run locally installed language models while keeping conversations and application data on their own machine.
+
 # NEXUS V3 ⚡
 
 **NEXUS** is a local-first AI dashboard built around **Ollama**, designed to give you a clean, private, and responsive AI experience on your own PC.
@@ -66,3 +67,9 @@ That's it. 🔥
 ## Documentation Notes
 
 NEXUS is designed around a local-first workflow: the application communicates with locally installed Ollama models while chat history and settings remain part of the local application environment.
+
+## Creator
+
+**NEXUS is made by JebinTech.**
+
+Built by **JebinTech** with a focus on private, local-first AI and practical software engineering.
