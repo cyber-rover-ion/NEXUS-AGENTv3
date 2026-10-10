@@ -1,75 +1,69 @@
 # NEXUS-AGENTv3
 
-NEXUS is a local-first AI assistant built around Ollama, with a FastAPI backend, browser-based frontend, and local SQLite storage.
+A local-first AI assistant built with Ollama, FastAPI, and SQLite.
 
 ## Overview
 
-NEXUS is designed to run language models directly on the user's computer instead of depending on hosted AI APIs. The application connects to a locally running Ollama instance, provides streaming conversations, and stores application data locally.
+NEXUS connects a browser-based interface to language models running through a local Ollama instance. A FastAPI backend handles application requests, while SQLite stores conversation history locally.
 
 ## Features
 
 - Local Ollama model integration
-- Streaming AI responses
+- Streaming assistant responses
 - Persistent conversation history
-- SQLite-based local storage
-- Configurable system prompt
-- Configurable default model
+- SQLite-backed local storage
+- Configurable default model and system prompt
 - Browser-based interface
-- FastAPI backend
-- Theme and interface customization
+- FastAPI application backend
+- Interface and theme customization
 
 ## Architecture
 
 ```text
-Browser Frontend
-      |
-      v
-FastAPI Backend
-      |
-      +----> SQLite
-      |
-      +----> Ollama
-                |
-                v
-          Local AI Model
+Browser Interface
+       |
+       v
+   FastAPI API
+    /       \
+   v         v
+SQLite     Ollama
+             |
+             v
+        Local Model
 ```
-
-The repository is organized around separate frontend and backend components, with application data stored under the local data directory.
 
 ## Requirements
 
-- Python 3.12+
-- Ollama
-- An Ollama model
+- Python 3.12 or later
+- Ollama installed and running
+- At least one model available in Ollama
 
-Install the Python dependencies:
+## Setup
+
+Install Python dependencies:
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-Install an Ollama model, for example:
+Pull a model supported by your system, for example:
 
 ```bash
 ollama pull qwen2.5:3b
 ```
 
-Start Ollama, then run the NEXUS server:
+Start Ollama, then launch the backend:
 
 ```bash
 python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 
-Open:
+Open `http://127.0.0.1:8000` in your browser.
 
-```text
-http://127.0.0.1:8000
-```
+## Local Data and Privacy
 
-## Project Direction
+NEXUS is designed for local model interaction and local conversation storage. Your actual privacy depends on the models, configuration, and any external services you choose to use.
 
-NEXUS is focused on private, local AI interaction and practical assistant tooling. The architecture is intended to remain lightweight while allowing the interface and local model support to evolve.
+## Maintainer
 
-## Creator
-
-Made by **JebinTech**.
+**JebinTech**
