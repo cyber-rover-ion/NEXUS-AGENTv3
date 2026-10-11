@@ -23,7 +23,7 @@
     // Backend health
     backendOnline: false,
     ollamaOnline: false,
-    
+
     // Model Discovery
     models: [],
     selectedModel: "",
@@ -45,6 +45,9 @@
     // Active Theme
     currentTheme: localStorage.getItem("nexus_theme") || "emerald",
   };
+
+  let healthPollTimer = null;
+  let bootInProgress = false;
 
   /* ========================================================================
      3. DOM SELECTORS
@@ -352,6 +355,19 @@
     }
   }
 
+  function startHealthPolling() {
+    if (healthPollTimer !== null) clearInterval(healthPollTimer);
+    healthPollTimer = setInterval(async () => {
+      const wasOllamaOnline = state.ollamaOnline;
+      await checkHealth();
+
+      // If Ollama comes back after a restart, rediscover models automatically.
+      if (!wasOllamaOnline && state.ollamaOnline) {
+        await fetchModels();
+      }
+    }, 8000);
+  }
+
   function updateStatusUI() {
     if (els.backendLed) els.backendLed.className = `node-led ${state.backendOnline ? "online" : "offline"}`;
     if (els.diagBackendLed) els.diagBackendLed.className = `diag-indicator-led ${state.backendOnline ? "online" : "offline"}`;
@@ -371,11 +387,16 @@
       const data = await apiJson("/api/models");
       state.models = Array.isArray(data.models) ? data.models : [];
       populateModelDropdowns();
-      if (els.diagModelCount) els.diagModelCount.textContent = `${state.models.length} model(s) installed`;
-    } catch (err) {
-      state.models = [];
-      populateModelDropdowns();
-      if (els.diagModelCount) els.diagModelCount.textContent = "0 detected";
+      if (els.diagModelCount) {
+        els.diagModelCount.textContent = `${state.models.length} model(s) installed`;
+      }
+    } catch {
+      // A temporary Ollama outage should not erase the last known model selection.
+      if (els.diagModelCount) {
+        els.diagModelCount.textContent = state.models.length
+          ? "Ollama disconnected — keeping known models and retrying"
+          : "Ollama unavailable — retrying connection";
+      }
     } finally {
       if (els.refreshModelsBtn) {
         setTimeout(() => els.refreshModelsBtn.classList.remove("spinning"), 600);
@@ -845,6 +866,7 @@
     const cardEl = asstWrapper.querySelector(".msg-card");
     let accumulated = "";
     let receivedFirstToken = false;
+    let streamCompleted = false;
 
     try {
       const response = await fetch(`${BACKEND_URL}/api/chat/stream`, {
@@ -892,7 +914,10 @@
           }
 
           if (payload.error) throw new Error(payload.error);
-          if (payload.done) continue;
+          if (payload.done) {
+            streamCompleted = true;
+            continue;
+          }
 
           if (typeof payload.content === "string") {
             if (!receivedFirstToken) {
@@ -905,6 +930,10 @@
             scrollChatToBottom(false);
           }
         }
+      }
+
+      if (!streamCompleted) {
+        throw new Error("The connection ended before Ollama finished its response. Check Ollama and retry.");
       }
 
       // Cleanup stream cursor
@@ -967,6 +996,8 @@
   }
 
   async function runBootSequence() {
+    if (bootInProgress) return;
+    bootInProgress = true;
     applyTheme(state.currentTheme);
     if (els.bootProgressFill) els.bootProgressFill.style.width = "25%";
     if (els.bootStep1) els.bootStep1.className = "boot-log-line done";
@@ -1006,7 +1037,8 @@
     } finally {
       clearTimeout(safetyTimer);
       setTimeout(dismissBoot, 350);
-      setInterval(checkHealth, 8000);
+      bootInProgress = false;
+      startHealthPolling();
     }
   }
 
