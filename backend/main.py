@@ -19,6 +19,18 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # NEXUS/
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DB_PATH = os.path.join(DATA_DIR, "nexus.db")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+OLLAMA_CONNECT_TIMEOUT = float(os.getenv("OLLAMA_CONNECT_TIMEOUT_SECONDS", "10"))
+OLLAMA_REQUEST_TIMEOUT = float(os.getenv("OLLAMA_REQUEST_TIMEOUT_SECONDS", "600"))
+OLLAMA_STREAM_READ_TIMEOUT = float(os.getenv("OLLAMA_STREAM_READ_TIMEOUT_SECONDS", "1800"))
+
+def ollama_timeout(*, streaming: bool = False) -> httpx.Timeout:
+    """Use a short connection timeout and a longer generation/read timeout."""
+    return httpx.Timeout(
+        connect=OLLAMA_CONNECT_TIMEOUT,
+        read=OLLAMA_STREAM_READ_TIMEOUT if streaming else OLLAMA_REQUEST_TIMEOUT,
+        write=30.0,
+        pool=10.0,
+    )
 
 DEFAULT_SYSTEM_PROMPT = "You are NEXUS, a helpful local AI assistant. Be accurate, concise, and transparent when you are uncertain."
 
@@ -79,30 +91,43 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 async def ollama_available() -> bool:
-    """Check if Ollama is reachable by querying /api/tags."""
+    """Check whether the Ollama API responds within a short health-check window."""
     try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            resp = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
-            return resp.status_code == 200
-    except Exception:
+        timeout = httpx.Timeout(connect=2.0, read=4.0, write=4.0, pool=2.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
+            return response.status_code == 200
+    except httpx.HTTPError:
         return False
 
 async def get_ollama_models() -> List[str]:
-    """Return list of model names installed in Ollama."""
+    """Return installed model names, with connection failures reported clearly."""
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
-            if resp.status_code != 200:
-                raise HTTPException(status_code=502, detail="Ollama returned an error")
-            data = resp.json()
-            models = [m["name"] for m in data.get("models", [])]
-            return models
+        timeout = httpx.Timeout(connect=OLLAMA_CONNECT_TIMEOUT, read=15.0, write=15.0, pool=10.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Ollama model discovery failed (HTTP {response.status_code}).",
+                )
+            data = response.json()
+            models = data.get("models", [])
+            if not isinstance(models, list):
+                raise HTTPException(status_code=502, detail="Ollama returned an invalid model list.")
+            return [
+                model["name"] for model in models
+                if isinstance(model, dict) and isinstance(model.get("name"), str)
+            ]
     except HTTPException:
         raise
     except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"Ollama request failed: {str(e)}") from e
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Unexpected error while fetching models: {str(e)}") from e
+        raise HTTPException(
+            status_code=503,
+            detail=f"Cannot reach Ollama at {OLLAMA_BASE_URL}. Check that Ollama is running.",
+        ) from e
+    except (ValueError, TypeError) as e:
+        raise HTTPException(status_code=502, detail="Ollama returned invalid JSON while listing models.") from e
 
 async def validate_model(model: str) -> None:
     """Check if the given model exists in Ollama."""
@@ -434,12 +459,18 @@ async def chat(request: ChatRequest):
     }
     
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=ollama_timeout()) as client:
             resp = await client.post(f"{OLLAMA_BASE_URL}/api/chat", json=ollama_payload)
             if resp.status_code != 200:
-                raise HTTPException(status_code=502, detail=f"Ollama error: {resp.text}")
+                detail = resp.text[:1000]
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Ollama chat failed (HTTP {resp.status_code}): {detail}",
+                )
             result = resp.json()
             assistant_content = result.get("message", {}).get("content", "")
+            if not isinstance(assistant_content, str) or not assistant_content.strip():
+                raise HTTPException(status_code=502, detail="Ollama returned an empty response.")
             
             # Save user and assistant messages
             save_message(request.conversation_id, "user", request.message)
@@ -459,11 +490,9 @@ async def chat(request: ChatRequest):
 
 @app.post("/api/chat/stream")
 async def chat_stream(request: ChatRequest):
-    """Stream chat response from Ollama and save the exchange."""
-    # Validate model
+    """Stream an Ollama response and persist only completed exchanges."""
     await validate_model(request.model)
-    
-    # Check conversation exists
+
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
@@ -471,64 +500,82 @@ async def chat_stream(request: ChatRequest):
         if not cursor.fetchone():
             raise HTTPException(status_code=404, detail="Conversation not found")
     except sqlite3.Error as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}") from e
     finally:
         conn.close()
-    
-    # Load conversation history
+
     history = load_conversation_history(request.conversation_id)
-    
-    # Build final messages with system prompt
     system_prompt = get_setting("system_prompt", DEFAULT_SYSTEM_PROMPT).strip()
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.extend(history)
     messages.append({"role": "user", "content": request.message})
-    
-    # Save user message
-    save_message(request.conversation_id, "user", request.message)
-    
-    # Prepare Ollama streaming request
+
     ollama_payload = {
         "model": request.model,
         "messages": messages,
-        "stream": True
+        "stream": True,
     }
-    
+
     async def generate():
         assistant_content = ""
+        completed = False
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                async with client.stream("POST", f"{OLLAMA_BASE_URL}/api/chat", json=ollama_payload) as resp:
-                    if resp.status_code != 200:
-                        error_detail = await resp.aread()
-                        yield f"data: {json.dumps({'error': f'Ollama error: {error_detail.decode()}'})}\n\n"
+            async with httpx.AsyncClient(timeout=ollama_timeout(streaming=True)) as client:
+                async with client.stream("POST", f"{OLLAMA_BASE_URL}/api/chat", json=ollama_payload) as response:
+                    if response.status_code != 200:
+                        detail = (await response.aread()).decode("utf-8", errors="replace")[:1000]
+                        yield f"data: {json.dumps({'error': f'Ollama chat failed (HTTP {response.status_code}): {detail}'})}\\n\\n"
                         return
-                    async for line in resp.aiter_lines():
+
+                    async for line in response.aiter_lines():
                         if not line.strip():
                             continue
                         try:
                             chunk = json.loads(line)
-                            if "message" in chunk and "content" in chunk["message"]:
-                                content = chunk["message"]["content"]
-                                assistant_content += content
-                                yield f"data: {json.dumps({'content': content})}\n\n"
-                            elif "error" in chunk:
-                                yield f"data: {json.dumps({'error': chunk['error']})}\n\n"
-                                return
                         except json.JSONDecodeError:
-                            continue
-            # Save assistant message after full response
-            if assistant_content:
-                save_message(request.conversation_id, "assistant", assistant_content)
-            yield f"data: {json.dumps({'done': True})}\n\n"
-        except httpx.HTTPError as e:
-            yield f"data: {json.dumps({'error': f'Ollama streaming failed: {str(e)}'})}\n\n"
+                            yield f"data: {json.dumps({'error': 'Ollama returned an invalid streaming chunk.'})}\\n\\n"
+                            return
+
+                        if isinstance(chunk.get("error"), str):
+                            yield f"data: {json.dumps({'error': chunk['error']})}\\n\\n"
+                            return
+
+                        message = chunk.get("message")
+                        if isinstance(message, dict):
+                            content = message.get("content", "")
+                            if isinstance(content, str) and content:
+                                assistant_content += content
+                                yield f"data: {json.dumps({'content': content})}\\n\\n"
+
+                        if chunk.get("done") is True:
+                            completed = True
+                            break
+
+            if not completed:
+                yield f"data: {json.dumps({'error': 'Ollama closed the stream before generation completed. Please retry.'})}\\n\\n"
+                return
+            if not assistant_content.strip():
+                yield f"data: {json.dumps({'error': 'Ollama completed without returning any text. Please retry or choose another model.'})}\\n\\n"
+                return
+
+            # Avoid saving a user-only message if Ollama fails or the stream is cut short.
+            save_message(request.conversation_id, "user", request.message)
+            save_message(request.conversation_id, "assistant", assistant_content)
+            yield f"data: {json.dumps({'done': True})}\\n\\n"
+        except httpx.TimeoutException:
+            yield f"data: {json.dumps({'error': 'Ollama timed out while generating a response. Try again, or increase OLLAMA_STREAM_READ_TIMEOUT_SECONDS.'})}\\n\\n"
+        except httpx.HTTPError:
+            yield f"data: {json.dumps({'error': 'Lost connection to Ollama during generation. Check that Ollama is running, then retry.'})}\\n\\n"
         except Exception as e:
-            yield f"data: {json.dumps({'error': f'Unexpected error: {str(e)}'})}\n\n"
-    
-    return StreamingResponse(generate(), media_type="text/event-stream")
+            yield f"data: {json.dumps({'error': f'Could not finish the Ollama response: {str(e)}'})}\\n\\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 # -----------------------------------------------------------------------------
 # Main entry point (if run directly)
