@@ -3,7 +3,7 @@ import sqlite3
 import json
 import asyncio
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
 import httpx
@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # NEXUS/backend -> NEXUS
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DB_PATH = os.path.join(DATA_DIR, "nexus.db")
-OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 
 DEFAULT_SYSTEM_PROMPT = "You are NEXUS, a helpful local AI assistant. Be accurate, concise, and transparent when you are uncertain."
 
@@ -76,7 +76,7 @@ def generate_id() -> str:
 
 def now_iso() -> str:
     """Return current UTC timestamp in ISO format."""
-    return datetime.utcnow().isoformat() + "Z"
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 async def ollama_available() -> bool:
     """Check if Ollama is reachable by querying /api/tags."""
@@ -97,10 +97,12 @@ async def get_ollama_models() -> List[str]:
             data = resp.json()
             models = [m["name"] for m in data.get("models", [])]
             return models
+    except HTTPException:
+        raise
     except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"Ollama request failed: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Ollama request failed: {str(e)}") from e
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Unexpected error while fetching models: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Unexpected error while fetching models: {str(e)}") from e
 
 async def validate_model(model: str) -> None:
     """Check if the given model exists in Ollama."""
@@ -217,16 +219,16 @@ def set_setting(key: str, value: str) -> None:
 # Pydantic models
 # -----------------------------------------------------------------------------
 class ConversationCreate(BaseModel):
-    title: Optional[str] = "New Conversation"
+    title: Optional[str] = Field(default="New Conversation", max_length=120)
 
 class ChatRequest(BaseModel):
-    conversation_id: str
-    message: str
-    model: str
+    conversation_id: str = Field(min_length=1, max_length=128)
+    message: str = Field(min_length=1, max_length=20000)
+    model: str = Field(min_length=1, max_length=200)
 
 class SettingsUpdate(BaseModel):
-    system_prompt: Optional[str] = None
-    default_model: Optional[str] = None
+    system_prompt: Optional[str] = Field(default=None, max_length=12000)
+    default_model: Optional[str] = Field(default=None, max_length=200)
 
 # -----------------------------------------------------------------------------
 # FastAPI app
@@ -243,7 +245,15 @@ app = FastAPI(title="NEXUS Backend", lifespan=lifespan)
 # CORS for local frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For local dev; tighten in production
+    allow_origins=[
+        origin.strip()
+        for origin in os.getenv(
+            "CORS_ORIGINS",
+            "http://127.0.0.1:8000,http://localhost:8000,"
+            "http://127.0.0.1:5173,http://localhost:5173",
+        ).split(",")
+        if origin.strip()
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -440,10 +450,12 @@ async def chat(request: ChatRequest):
                 "model": request.model,
                 "assistant_response": assistant_content
             }
+    except HTTPException:
+        raise
     except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"Ollama request failed: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Ollama request failed: {str(e)}") from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}") from e
 
 @app.post("/api/chat/stream")
 async def chat_stream(request: ChatRequest):
