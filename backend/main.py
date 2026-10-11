@@ -483,8 +483,15 @@ async def chat(request: ChatRequest):
             }
     except HTTPException:
         raise
+    except httpx.TimeoutException as e:
+        raise HTTPException(
+            status_code=504,
+            detail="Ollama timed out generating a response. Try again or increase OLLAMA_REQUEST_TIMEOUT_SECONDS.",
+        ) from e
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"Ollama request failed: {str(e)}") from e
+    except ValueError as e:
+        raise HTTPException(status_code=502, detail="Ollama returned invalid JSON for the chat response.") from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}") from e
 
@@ -526,7 +533,7 @@ async def chat_stream(request: ChatRequest):
                 async with client.stream("POST", f"{OLLAMA_BASE_URL}/api/chat", json=ollama_payload) as response:
                     if response.status_code != 200:
                         detail = (await response.aread()).decode("utf-8", errors="replace")[:1000]
-                        yield f"data: {json.dumps({'error': f'Ollama chat failed (HTTP {response.status_code}): {detail}'})}\\n\\n"
+                        yield f"data: {json.dumps({'error': f'Ollama chat failed (HTTP {response.status_code}): {detail}'})}\n\n"
                         return
 
                     async for line in response.aiter_lines():
@@ -535,11 +542,11 @@ async def chat_stream(request: ChatRequest):
                         try:
                             chunk = json.loads(line)
                         except json.JSONDecodeError:
-                            yield f"data: {json.dumps({'error': 'Ollama returned an invalid streaming chunk.'})}\\n\\n"
+                            yield f"data: {json.dumps({'error': 'Ollama returned an invalid streaming chunk.'})}\n\n"
                             return
 
                         if isinstance(chunk.get("error"), str):
-                            yield f"data: {json.dumps({'error': chunk['error']})}\\n\\n"
+                            yield f"data: {json.dumps({'error': chunk['error']})}\n\n"
                             return
 
                         message = chunk.get("message")
@@ -547,29 +554,29 @@ async def chat_stream(request: ChatRequest):
                             content = message.get("content", "")
                             if isinstance(content, str) and content:
                                 assistant_content += content
-                                yield f"data: {json.dumps({'content': content})}\\n\\n"
+                                yield f"data: {json.dumps({'content': content})}\n\n"
 
                         if chunk.get("done") is True:
                             completed = True
                             break
 
             if not completed:
-                yield f"data: {json.dumps({'error': 'Ollama closed the stream before generation completed. Please retry.'})}\\n\\n"
+                yield f"data: {json.dumps({'error': 'Ollama closed the stream before generation completed. Please retry.'})}\n\n"
                 return
             if not assistant_content.strip():
-                yield f"data: {json.dumps({'error': 'Ollama completed without returning any text. Please retry or choose another model.'})}\\n\\n"
+                yield f"data: {json.dumps({'error': 'Ollama completed without returning any text. Please retry or choose another model.'})}\n\n"
                 return
 
             # Avoid saving a user-only message if Ollama fails or the stream is cut short.
             save_message(request.conversation_id, "user", request.message)
             save_message(request.conversation_id, "assistant", assistant_content)
-            yield f"data: {json.dumps({'done': True})}\\n\\n"
+            yield f"data: {json.dumps({'done': True})}\n\n"
         except httpx.TimeoutException:
-            yield f"data: {json.dumps({'error': 'Ollama timed out while generating a response. Try again, or increase OLLAMA_STREAM_READ_TIMEOUT_SECONDS.'})}\\n\\n"
+            yield f"data: {json.dumps({'error': 'Ollama timed out while generating a response. Try again, or increase OLLAMA_STREAM_READ_TIMEOUT_SECONDS.'})}\n\n"
         except httpx.HTTPError:
-            yield f"data: {json.dumps({'error': 'Lost connection to Ollama during generation. Check that Ollama is running, then retry.'})}\\n\\n"
+            yield f"data: {json.dumps({'error': 'Lost connection to Ollama during generation. Check that Ollama is running, then retry.'})}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'error': f'Could not finish the Ollama response: {str(e)}'})}\\n\\n"
+            yield f"data: {json.dumps({'error': f'Could not finish the Ollama response: {str(e)}'})}\n\n"
 
     return StreamingResponse(
         generate(),
