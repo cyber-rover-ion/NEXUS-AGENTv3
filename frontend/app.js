@@ -362,7 +362,7 @@
       await checkHealth();
 
       // If Ollama comes back after a restart, rediscover models automatically.
-      if (!wasOllamaOnline && state.ollamaOnline && state.models.length === 0) {
+      if (!wasOllamaOnline && state.ollamaOnline) {
         await fetchModels();
       }
     }, 8000);
