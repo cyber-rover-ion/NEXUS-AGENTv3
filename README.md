@@ -67,3 +67,6 @@ NEXUS is designed for local model interaction and local conversation storage. Yo
 ## Maintainer
 
 **JebinTech**
+
+- GitHub: [@cyber-rover-ion](https://github.com/cyber-rover-ion)
+- Instagram: [@constantine.hell](https://www.instagram.com/constantine.hell/)
