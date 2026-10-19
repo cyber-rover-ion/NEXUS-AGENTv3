@@ -932,6 +932,32 @@
         }
       }
 
+      // Flush any final SSE event that arrived without a trailing newline.
+      buffer += decoder.decode();
+      const finalLine = buffer.trim();
+      if (finalLine.startsWith("data:")) {
+        const finalJson = finalLine.slice(5).trim();
+        if (finalJson) {
+          let finalPayload;
+          try {
+            finalPayload = JSON.parse(finalJson);
+          } catch {
+            finalPayload = null;
+          }
+          if (finalPayload?.error) throw new Error(finalPayload.error);
+          if (finalPayload?.done) streamCompleted = true;
+          if (typeof finalPayload?.content === "string") {
+            if (!receivedFirstToken) {
+              cardEl.innerHTML = "";
+              receivedFirstToken = true;
+            }
+            accumulated += finalPayload.content;
+            cardEl.innerHTML = renderMarkdown(accumulated) + '<span class="stream-cursor"></span>';
+            attachCodeCopyHandlers(asstWrapper);
+          }
+        }
+      }
+
       if (!streamCompleted) {
         throw new Error("The connection ended before Ollama finished its response. Check Ollama and retry.");
       }
