@@ -872,9 +872,10 @@
 
       while (true) {
         const { value, done } = await reader.read();
-        if (done) break;
+        buffer += decoder.decode(value, { stream: !done });
+        if (done && buffer && !buffer.endsWith("\n")) buffer += "\n";
+        if (done && !buffer) break;
 
-        buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop(); // keep remainder
 
@@ -905,6 +906,7 @@
             scrollChatToBottom(false);
           }
         }
+        if (done) break;
       }
 
       // Cleanup stream cursor
